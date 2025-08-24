@@ -118,18 +118,26 @@ Request: {"userName":"tim"}
 ## 📂 Repository Structure
 ```text
 aws-serverless-security-logger/
-├── lambda_function.py
-├── README.md
-└── images/
-    ├── 01-sns-topic.png
-    ├── 02-lambda-code.png
-    ├── 03-lambda-env-var.png
-    ├── 04-lambda-role-perms.png
-    ├── 05-eventbridge-rule.png
-    ├── 05-eventbridge-rule2.png
-    ├── 07-eventbridge-pattern.png
-    ├── 08-cloudtrail-event.png
-    └── 09-email-alert.png
+├── src/
+│   └── handler.py
+├── tests/
+│   └── test_handler.py
+├── eventbridge_patterns/
+│   ├── iam_changes.json
+│   ├── console_login_failures.json
+│   └── ec2_open_sg.json
+├── iam_policies/
+│   └── lambda_least_privilege.json
+├── examples/
+│   └── structured_log_example.json
+├── docs/
+│   └── costs-and-cleanup.md
+├── template-sam.yaml
+├── requirements-dev.txt
+├── LICENSE
+├── .gitignore
+└── README_badges_snippet.md
+
 ```
 ---
 
