@@ -1,0 +1,16 @@
+{
+  "detail-type": [
+    "AWS Console Sign In via CloudTrail"
+  ],
+  "detail": {
+    "eventSource": [
+      "signin.amazonaws.com"
+    ],
+    "eventName": [
+      "ConsoleLogin"
+    ],
+    "errorMessage": [
+      "Failed authentication"
+    ]
+  }
+}

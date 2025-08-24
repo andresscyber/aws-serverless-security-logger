@@ -1,0 +1,100 @@
+
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  AWS Serverless Security Logger - EventBridge -> Lambda -> SNS
+  Detects suspicious IAM, console sign-in failures, and EC2 Security Group 0.0.0.0/0 changes.
+
+Globals:
+  Function:
+    Runtime: python3.11
+    Timeout: 10
+    MemorySize: 256
+    Tracing: Active
+
+Parameters:
+  EmailSubscriber:
+    Type: String
+    Description: Email to subscribe to the SNS topic for security alerts.
+  ProjectName:
+    Type: String
+    Default: serverless-security-logger
+
+Resources:
+  SecurityAlertTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub '${ProjectName}-alerts'
+
+  SecurityAlertSubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      TopicArn: !Ref SecurityAlertTopic
+      Protocol: email
+      Endpoint: !Ref EmailSubscriber
+
+  SecurityAlertFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub '${ProjectName}-handler'
+      Handler: src/handler.lambda_handler
+      Description: Formats CloudTrail events and publishes to SNS.
+      Environment:
+        Variables:
+          TOPIC_ARN: !Ref SecurityAlertTopic
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action:
+                - logs:CreateLogGroup
+                - logs:CreateLogStream
+                - logs:PutLogEvents
+              Resource: "*"
+            - Effect: Allow
+              Action: sns:Publish
+              Resource: !Ref SecurityAlertTopic
+      Events:
+        IAMChanges:
+          Type: CloudWatchEvent
+          Properties:
+            Pattern:
+              detail-type: ["AWS API Call via CloudTrail"]
+              detail:
+                eventSource: ["iam.amazonaws.com"]
+                eventName:
+                  - "CreateUser"
+                  - "PutUserPolicy"
+                  - "AttachUserPolicy"
+                  - "CreateAccessKey"
+                  - "UpdateAssumeRolePolicy"
+        ConsoleLoginFailures:
+          Type: CloudWatchEvent
+          Properties:
+            Pattern:
+              detail-type: ["AWS Console Sign In via CloudTrail"]
+              detail:
+                eventSource: ["signin.amazonaws.com"]
+                eventName: ["ConsoleLogin"]
+                errorMessage: ["Failed authentication"]
+        OpenSecurityGroupIngress:
+          Type: CloudWatchEvent
+          Properties:
+            Pattern:
+              detail-type: ["AWS API Call via CloudTrail"]
+              detail:
+                eventSource: ["ec2.amazonaws.com"]
+                eventName: ["AuthorizeSecurityGroupIngress"]
+                requestParameters:
+                  ipPermissions:
+                    items:
+                      ipRanges:
+                        items:
+                          cidrIp: ["0.0.0.0/0"]
+
+Outputs:
+  TopicArn:
+    Description: SNS Topic ARN for security alerts
+    Value: !Ref SecurityAlertTopic
+  FunctionName:
+    Description: Lambda Function Name
+    Value: !Ref SecurityAlertFunction

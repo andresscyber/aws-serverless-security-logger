@@ -1,0 +1,17 @@
+{
+  "detail-type": [
+    "AWS API Call via CloudTrail"
+  ],
+  "detail": {
+    "eventSource": [
+      "iam.amazonaws.com"
+    ],
+    "eventName": [
+      "CreateUser",
+      "PutUserPolicy",
+      "AttachUserPolicy",
+      "CreateAccessKey",
+      "UpdateAssumeRolePolicy"
+    ]
+  }
+}

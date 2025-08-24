@@ -1,0 +1,16 @@
+{
+  "severity": "high",
+  "eventTime": "2025-08-24T00:00:00Z",
+  "account": "111122223333",
+  "region": "us-east-1",
+  "eventSource": "iam.amazonaws.com",
+  "eventName": "CreateUser",
+  "sourceIPAddress": "1.2.3.4",
+  "userIdentity": {
+    "type": "IAMUser",
+    "arn": "arn:aws:iam::111122223333:user/Admin",
+    "userName": "Admin"
+  },
+  "requestParameters": {},
+  "ruleHint": "Sensitive IAM change"
+}
