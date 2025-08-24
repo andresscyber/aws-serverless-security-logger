@@ -1,9 +1,30 @@
 # file: lambda_function.py
-import os, json, boto3
+"""
+AWS Serverless Security Logger (refined)
 
-SNS_ARN = os.environ.get("ALERT_SNS_ARN", "")
+- Structured logging (JSON) with eventID for easy correlation in CloudTrail
+- Defensive .get() usage with sensible defaults (e.g., "unknown")
+- Resilient SNS publishing with error handling
+- Clear constants and helper functions
+"""
+
+import json
+import logging
+import os
+from typing import Dict, Tuple
+
+import boto3
+
+# --- Logging setup -----------------------------------------------------------
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
+
+# --- Configuration -----------------------------------------------------------
+# SNS topic to publish alerts to. Set in Lambda console (Configuration > Environment variables).
+SNS_ARN = os.environ.get("ALERT_SNS_ARN", "").strip()
 sns = boto3.client("sns")
 
+# Monitored AWS services (via CloudTrail -> EventBridge)
 INTERESTING_EVENT_SOURCES = {
     "signin.amazonaws.com",
     "iam.amazonaws.com",
@@ -13,48 +34,72 @@ INTERESTING_EVENT_SOURCES = {
     "kms.amazonaws.com",
 }
 
+# High-value IAM changes that should alert
 IAM_CHANGE_EVENTS = {
-    "CreateUser","DeleteUser","CreateAccessKey","DeleteAccessKey",
-    "AttachUserPolicy","DetachUserPolicy","PutUserPolicy","DeleteUserPolicy",
-    "CreateRole","DeleteRole","AttachRolePolicy","DetachRolePolicy",
-    "UpdateAssumeRolePolicy"
+    "CreateUser",
+    "DeleteUser",
+    "CreateAccessKey",
+    "DeleteAccessKey",
+    "AttachUserPolicy",
+    "DetachUserPolicy",
+    "PutUserPolicy",
+    "DeleteUserPolicy",
+    "CreateRole",
+    "DeleteRole",
+    "AttachRolePolicy",
+    "DetachRolePolicy",
+    "UpdateAssumeRolePolicy",
 }
 
+# CloudTrail tampering indicators
 CLOUDTRAIL_CHANGE_EVENTS = {
-    "StopLogging","DeleteTrail","UpdateTrail","PutEventSelectors"
+    "StopLogging",
+    "DeleteTrail",
+    "UpdateTrail",
+    "PutEventSelectors",
 }
 
-def _is_world_open_sg_change(detail):
+
+# --- Helper logic ------------------------------------------------------------
+def _is_world_open_sg_change(detail: Dict) -> bool:
+    """Return True if a Security Group ingress change opens to the world (0.0.0.0/0)."""
     if detail.get("eventSource") != "ec2.amazonaws.com":
         return False
     if detail.get("eventName") not in ("AuthorizeSecurityGroupIngress", "RevokeSecurityGroupIngress"):
         return False
+
     params = detail.get("requestParameters") or {}
     ip_permissions = params.get("ipPermissions") or []
     if isinstance(ip_permissions, dict):
         ip_permissions = [ip_permissions]
-    # check any cidrIpv4/cidrIp = 0.0.0.0/0
+
+    # Newer API shape
     for p in ip_permissions:
         for r in (p.get("ipRanges") or []):
             if (r.get("cidrIp") or r.get("cidrIpv4")) == "0.0.0.0/0":
                 return True
-    # older form
+
+    # Older/simple shape
     if params.get("cidrIp") == "0.0.0.0/0":
         return True
+
     return False
 
-def _is_interesting(detail):
-    es = detail.get("eventSource","")
-    en = detail.get("eventName","")
-    err = detail.get("errorCode") or ""
+
+def _is_interesting(detail: Dict) -> Tuple[bool, str]:
+    """Return (is_interesting, reason) for the given CloudTrail detail."""
+    es = (detail.get("eventSource") or "").strip()
+    en = (detail.get("eventName") or "").strip()
+    err = (detail.get("errorCode") or "").strip()
+
     if es not in INTERESTING_EVENT_SOURCES:
         return False, ""
 
-    # Console login failures or no MFA
+    # Console logins
     if es == "signin.amazonaws.com" and en == "ConsoleLogin":
         status = (detail.get("responseElements") or {}).get("ConsoleLogin")
         mfa = (detail.get("additionalEventData") or {}).get("MFAUsed")
-        if status != "Success" or str(mfa).lower() in ("no","false","none",""):
+        if status != "Success" or str(mfa).lower() in {"no", "false", "none", ""}:
             return True, f"ConsoleLogin status={status}, MFAUsed={mfa}"
 
     # IAM changes
@@ -65,7 +110,7 @@ def _is_interesting(detail):
     if es == "cloudtrail.amazonaws.com" and en in CLOUDTRAIL_CHANGE_EVENTS:
         return True, "CloudTrail change"
 
-    # Security Group world-open
+    # Security Group opened to world
     if _is_world_open_sg_change(detail):
         return True, "SecurityGroup world-open change"
 
@@ -75,40 +120,55 @@ def _is_interesting(detail):
 
     return False, ""
 
-def _fmt(detail, reason):
+
+def _fmt(detail: Dict, reason: str) -> str:
+    """Human-friendly message body for SNS/email."""
     user = detail.get("userIdentity") or {}
+    user_arn = user.get("arn") or user.get("principalId") or "unknown"
+    request_snippet = json.dumps(detail.get("requestParameters") or {}, default=str)[:900]
+
     return (
         f"[{reason}] {detail.get('eventName')} @ {detail.get('eventSource')}\n"
+        f"EventID: {detail.get('eventID')}\n"
         f"Account: {detail.get('recipientAccountId')}  Region: {detail.get('awsRegion')}\n"
-        f"User: {user.get('arn') or user.get('principalId')}\n"
+        f"User: {user_arn}\n"
         f"Source IP: {detail.get('sourceIPAddress')}  UserAgent: {detail.get('userAgent')}\n"
         f"Time: {detail.get('eventTime')}\n"
-        f"Request: {json.dumps(detail.get('requestParameters') or {}, default=str)[:900]}"
+        f"Request: {request_snippet}"
     )
 
+
+# --- Lambda handler ----------------------------------------------------------
 def lambda_handler(event, context):
-    detail = event.get("detail") or {}
+    detail = (event or {}).get("detail") or {}
+
     interesting, reason = _is_interesting(detail)
 
-    # Always log structured line to CloudWatch
-    print(json.dumps({
+    # Structured log for CloudWatch (easy to query with Logs Insights)
+    log_line = {
+        "eventID": detail.get("eventID"),
         "interesting": interesting,
         "reason": reason,
         "eventName": detail.get("eventName"),
         "eventSource": detail.get("eventSource"),
-        "user": (detail.get("userIdentity") or {}).get("arn"),
+        "user": (detail.get("userIdentity") or {}).get("arn") or (detail.get("userIdentity") or {}).get("principalId"),
         "sourceIP": detail.get("sourceIPAddress"),
         "region": detail.get("awsRegion"),
         "time": detail.get("eventTime"),
-        "errorCode": detail.get("errorCode")
-    }))
+        "errorCode": detail.get("errorCode"),
+    }
+    logger.info(json.dumps(log_line))
 
-    # Send alert to SNS for interesting events
+    # Publish interesting events to SNS
     if interesting and SNS_ARN:
-        sns.publish(
-            TopicArn=SNS_ARN,
-            Subject=f"Security Alert: {detail.get('eventName')}",
-            Message=_fmt(detail, reason),
-        )
+        try:
+            sns.publish(
+                TopicArn=SNS_ARN,
+                Subject=f"Security Alert: {detail.get('eventName') or 'Event'}",
+                Message=_fmt(detail, reason),
+            )
+        except Exception as e:
+            # Keep running, but surface the failure in logs for triage
+            logger.error(f"SNS publish failed: {e}", exc_info=True)
 
     return {"ok": True, "interesting": interesting, "reason": reason}
